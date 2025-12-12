@@ -1,0 +1,5 @@
+[
+  { "id": "sg", "url": "http://localhost:9001", "lat": 1.3521, "lon": 103.8198 },
+  { "id": "ny", "url": "http://localhost:9002", "lat": 40.7128, "lon": -74.0060 },
+  { "id": "ldn", "url": "http://localhost:9003", "lat": 51.5074, "lon": -0.1278 }
+]

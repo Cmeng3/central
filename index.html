@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Central CDN</title>
+
+<style>
+body { font-family: Arial; background:#f4f6f8; padding:20px; }
+.card { background:#fff; padding:16px; margin-bottom:20px; border-radius:8px; }
+table { width:100%; border-collapse:collapse; }
+th,td { padding:10px; border-bottom:1px solid #ddd; text-align:center; }
+thead { background:#e9ecef; }
+.badge {
+  background:#e3f2fd; padding:4px 8px; border-radius:4px;
+  cursor:pointer; text-decoration:none; color:#1565c0;
+}
+.badge:hover { background:#bbdefb; }
+.preview-img { width:80px; cursor:pointer; }
+.nearest a { color:#2e7d32; font-weight:bold; cursor:pointer; }
+</style>
+</head>
+
+<body>
+
+<h1>Central CDN – File Management</h1>
+
+<div class="card">
+  <input type="file" id="fileInput">
+  <button onclick="uploadFile()">Upload</button>
+</div>
+
+<div class="card">
+<table>
+<thead>
+<tr>
+<th>ID</th><th>Name</th><th>Size</th>
+<th>SG</th><th>NY</th><th>LDN</th>
+<th>Nearest</th><th>Preview</th><th>Delete</th>
+</tr>
+</thead>
+<tbody id="fileTable"></tbody>
+</table>
+</div>
+
+<script>
+const STORAGE = {
+  sg: "http://localhost:9001",
+  ny: "http://localhost:9002",
+  ldn: "http://localhost:9003"
+};
+
+async function loadFiles() {
+  const res = await fetch("/list");
+  const data = await res.json();
+  const tb = document.getElementById("fileTable");
+  tb.innerHTML = "";
+
+  Object.values(data).forEach(f => {
+    tb.innerHTML += `
+<tr>
+<td>${f.id}</td>
+<td>${f.filename}</td>
+<td>${f.size}</td>
+<td>${f.replicated.includes("sg") ? `<a class="badge" onclick="previewFrom('sg','${f.id}')">SG</a>` : ""}</td>
+<td>${f.replicated.includes("ny") ? `<a class="badge" onclick="previewFrom('ny','${f.id}')">NY</a>` : ""}</td>
+<td>${f.replicated.includes("ldn") ? `<a class="badge" onclick="previewFrom('ldn','${f.id}')">LDN</a>` : ""}</td>
+<td class="nearest"><a onclick="downloadNearest('${f.id}')">Download</a></td>
+<td><img src="/file/${f.id}" class="preview-img" onclick="preview('/file/${f.id}')"></td>
+<td><button onclick="deleteFile('${f.id}')">Delete</button></td>
+</tr>`;
+  });
+}
+
+async function downloadNearest(id) {
+  const res = await fetch("/nearest/" + id);
+  const node = await res.json();
+  const url = node.url + "/file/" + id;
+
+  window.open(url, "_blank"); // preview
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+function previewFrom(region, id) {
+  window.open(STORAGE[region] + "/file/" + id, "_blank");
+}
+
+function preview(url) {
+  window.open(url, "_blank");
+}
+
+async function uploadFile() {
+  const f = document.getElementById("fileInput").files[0];
+  if (!f) return alert("Choose file");
+  const fd = new FormData();
+  fd.append("file", f);
+  await fetch("/upload", { method:"POST", body:fd });
+  loadFiles();
+}
+
+async function deleteFile(id) {
+  await fetch("/delete/" + id, { method:"DELETE" });
+  loadFiles();
+}
+
+loadFiles();
+</script>
+
+</body>
+</html>

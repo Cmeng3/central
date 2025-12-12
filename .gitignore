@@ -1,0 +1,20 @@
+# Go build files
+*.exe
+*.out
+
+# Runtime generated files
+*.tmp
+files.json.tmp
+
+# Storage data (uploaded files)
+storage/
+gp-storage/storage/
+
+# OS / Editor junk
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Go cache (just in case)
+bin/
