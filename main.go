@@ -11,11 +11,12 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
+
+/* ===================== STRUCTS ===================== */
 
 type StorageNode struct {
 	ID  string  `json:"id"`
@@ -29,8 +30,10 @@ type FileMeta struct {
 	Filename   string   `json:"filename"`
 	Size       int64    `json:"size"`
 	Replicated []string `json:"replicated"`
-	CreatedAt string   `json:"created_at"`
+	CreatedAt  string   `json:"created_at"`
 }
+
+/* ===================== GLOBALS ===================== */
 
 var (
 	nodes  []StorageNode
@@ -40,7 +43,7 @@ var (
 	client = &http.Client{Timeout: 20 * time.Second}
 )
 
-/* ---------------- Utils ---------------- */
+/* ===================== UTILS ===================== */
 
 func loadDB() {
 	if b, err := os.ReadFile(dbFile); err == nil {
@@ -64,25 +67,34 @@ func haversine(aLat, aLon, bLat, bLon float64) float64 {
 	return 2 * R * math.Asin(math.Sqrt(h))
 }
 
-/* ---------------- Main ---------------- */
+/* ===================== MAIN ===================== */
 
 func main() {
 	port := flag.Int("port", 8000, "central port")
 	nodesFile := flag.String("nodes", "./files.json", "nodes config")
 	flag.Parse()
 
+	// Load nodes
 	raw, err := os.ReadFile(*nodesFile)
-	if err != nil {
-		log.Fatal(err)
-	}
-	json.Unmarshal(raw, &nodes)
+if err != nil {
+    log.Fatal("FAILED TO READ files.json:", err)
+}
 
-	loadDB()
+err = json.Unmarshal(raw, &nodes)
+if err != nil {
+    log.Fatal("FAILED TO PARSE files.json:", err)
+}
+
+log.Println("NODES LOADED:", len(nodes))
+for _, n := range nodes {
+    log.Println("NODE:", n.ID, n.URL)
+}
+
 
 	// Serve UI
 	http.Handle("/", http.FileServer(http.Dir("./")))
 
-	/* -------- LIST FILES -------- */
+	/* ---------- LIST FILES ---------- */
 	http.HandleFunc("/list", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -90,55 +102,78 @@ func main() {
 		json.NewEncoder(w).Encode(files)
 	})
 
-	/* -------- UPLOAD -------- */
+	/* ---------- UPLOAD ---------- */
 	http.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
-		r.ParseMultipartForm(200 << 20)
+	log.Println("UPLOAD HIT")
 
-		f, fh, err := r.FormFile("file")
+	r.ParseMultipartForm(200 << 20)
+
+	f, fh, err := r.FormFile("file")
+	if err != nil {
+		log.Println("UPLOAD ERROR: no file")
+		http.Error(w, "file required", 400)
+		return
+	}
+	defer f.Close()
+
+	log.Println("UPLOAD FILE:", fh.Filename)
+
+	data, _ := io.ReadAll(f)
+	id := fmt.Sprintf("%d", time.Now().UnixNano())
+
+	rep := []string{}
+
+	for _, n := range nodes {
+		log.Println("REPLICATING TO:", n.ID)
+
+		var buf bytes.Buffer
+		wr := multipart.NewWriter(&buf)
+		wr.WriteField("id", id)
+		wr.WriteField("filename", fh.Filename)
+
+		part, _ := wr.CreateFormFile("file", fh.Filename)
+		part.Write(data)
+		wr.Close()
+
+		req, _ := http.NewRequest("POST", n.URL+"/replicate", &buf)
+		req.Header.Set("Content-Type", wr.FormDataContentType())
+
+		resp, err := client.Do(req)
 		if err != nil {
-			http.Error(w, "file required", 400)
-			return
-		}
-		defer f.Close()
-
-		data, _ := io.ReadAll(f)
-		id := fmt.Sprintf("%d", time.Now().UnixNano())
-
-		rep := []string{}
-		for _, n := range nodes {
-			var buf bytes.Buffer
-			wr := multipart.NewWriter(&buf)
-			wr.WriteField("id", id)
-			wr.WriteField("filename", fh.Filename)
-			part, _ := wr.CreateFormFile("file", fh.Filename)
-			part.Write(data)
-			wr.Close()
-
-			req, _ := http.NewRequest("POST", n.URL+"/replicate", &buf)
-			req.Header.Set("Content-Type", wr.FormDataContentType())
-			resp, err := client.Do(req)
-			if err == nil && resp.StatusCode == 201 {
-				rep = append(rep, n.ID)
-			}
+			log.Println("REPLICATE FAILED:", n.ID, err)
+			continue
 		}
 
-		mu.Lock()
-		files[id] = FileMeta{
-			ID:         id,
-			Filename:   fh.Filename,
-			Size:       int64(len(data)),
-			Replicated: rep,
-			CreatedAt: time.Now().Format(time.RFC3339),
+		log.Println("REPLICATE STATUS:", n.ID, resp.Status)
+		resp.Body.Close()
+
+		if resp.StatusCode == 201 {
+			rep = append(rep, n.ID)
 		}
-		saveDB()
-		mu.Unlock()
+	}
 
-		json.NewEncoder(w).Encode(files[id])
-	})
+	mu.Lock()
+	files[id] = FileMeta{
+		ID: id, Filename: fh.Filename,
+		Size: int64(len(data)), Replicated: rep,
+	}
+	saveDB()
+	mu.Unlock()
 
-	/* -------- NEAREST INFO -------- */
+	log.Println("UPLOAD DONE:", id)
+
+	w.WriteHeader(http.StatusCreated)
+})
+
+
+	/* ---------- NEAREST ---------- */
 	http.HandleFunc("/nearest/", func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/nearest/")
+
+		if len(nodes) == 0 {
+			http.Error(w, "no storage nodes configured", http.StatusServiceUnavailable)
+			return
+		}
 
 		mu.Lock()
 		meta, ok := files[id]
@@ -148,16 +183,14 @@ func main() {
 			return
 		}
 
-		// DEFAULT: Cambodia / SEA → Singapore
+		if len(meta.Replicated) == 0 {
+			http.Error(w, "file not replicated yet", http.StatusServiceUnavailable)
+			return
+		}
+
+		// Default SEA → Singapore
 		lat := 1.3521
 		lon := 103.8198
-
-		if h := r.Header.Get("X-Client-Lat"); h != "" {
-			lat, _ = strconv.ParseFloat(h, 64)
-		}
-		if h := r.Header.Get("X-Client-Lon"); h != "" {
-			lon, _ = strconv.ParseFloat(h, 64)
-		}
 
 		best := nodes[0]
 		bestD := 1e18
@@ -178,14 +211,17 @@ func main() {
 		json.NewEncoder(w).Encode(best)
 	})
 
-	/* -------- FILE (redirect only) -------- */
+	/* ---------- FILE (REDIRECT) ---------- */
 	http.HandleFunc("/file/", func(w http.ResponseWriter, r *http.Request) {
+		if len(nodes) == 0 {
+			http.Error(w, "no storage nodes configured", http.StatusServiceUnavailable)
+			return
+		}
 		id := strings.TrimPrefix(r.URL.Path, "/file/")
-		node := nodes[0]
-		http.Redirect(w, r, node.URL+"/file/"+id, http.StatusTemporaryRedirect)
+		http.Redirect(w, r, nodes[0].URL+"/file/"+id, http.StatusTemporaryRedirect)
 	})
 
-	/* -------- DELETE -------- */
+	/* ---------- DELETE ---------- */
 	http.HandleFunc("/delete/", func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/delete/")
 		for _, n := range nodes {
